@@ -248,10 +248,10 @@ The `todo` tool and its card replace the third-party todo extension (remove `npm
 Three things keep the list current, which a static tool description cannot:
 
 - `write` replaces the whole list in one call, so the model rewrites the plan instead of patching it; `add`, `update`, `clear`, and `list` remain for single moves.
-- Every turn's system prompt carries the open tasks and the rules: in_progress before starting, done right after finishing, update before ending the turn.
-- A list that goes two turns untouched while tasks stay open turns amber with `stale · N turns`, and the prompt says so, so the model brings it up to date.
+- Hidden, persisted conversation snapshots carry the ordered tasks, IDs and rules only when the list changes or its latest snapshot is missing from retained context. The system prompt stays unchanged; resume, branching and compaction restore missing snapshots once.
+- A list that goes two turns untouched while tasks stay open turns amber with `stale · N turns`. The model gets one reminder without a changing counter; a successful todo mutation rearms it, while `list` and failed updates do not.
 
-A finished list stays on screen for the turn it finished in and clears at the next. `ctrl+shift+t` collapses the card to the task in progress (`GENTLE_PI_TODO_KEY` rebinds it, `off` disables it); `GENTLE_PI_TODO=0` disables the tool and the card.
+A finished list stays on screen for the turn it finished in and clears at the next. Cleared or finished work supersedes earlier active snapshots with a hidden “No active todo tasks” message once. `ctrl+shift+t` collapses the card to the task in progress (`GENTLE_PI_TODO_KEY` rebinds it, `off` disables it); `GENTLE_PI_TODO=0` disables the tool and the card.
 
 ### Gentle Stats
 

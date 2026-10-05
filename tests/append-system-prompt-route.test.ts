@@ -3,7 +3,7 @@ import test, { after, before } from "node:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { BeforeAgentStartEventResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createGentleAiExtension } from "../extensions/gentle-ai.ts";
 import gentleTodo from "../extensions/gentle-todo.ts";
 
@@ -88,11 +88,11 @@ function ctx(): ExtensionContext {
 		cwd: fixtureCwd,
 		hasUI: true,
 		ui: { notify() {}, setWidget() {} },
-		sessionManager: { getSessionId: () => "append-route-session", getBranch: () => [] },
+		sessionManager: { getSessionId: () => "append-route-session", getBranch: () => [], buildSessionProjection: () => ({ messages: [] }) },
 	} as unknown as ExtensionContext;
 }
 
-test("both extensions land their block in appendSystemPrompt on one shared options object, and neither returns a replacement systemPrompt", async () => {
+test("the harness appends stable instructions while todo returns a hidden snapshot without changing shared prompt options", async () => {
 	const aiHandlers = gentleAiHandlers();
 	const { handlers: todoHandlers, tools } = gentleTodoHandlers();
 	const session = ctx();
@@ -107,23 +107,23 @@ test("both extensions land their block in appendSystemPrompt on one shared optio
 	// systemPromptOptions object within one emission, exactly as pi's runner
 	// does for the real event.
 	const aiResult = await aiHandlers.get("before_agent_start")!(event, session);
-	let todoResult: unknown;
-	for (const handler of todoHandlers.get("before_agent_start") ?? []) todoResult = await handler(event, session);
+	const harness = event.systemPromptOptions.appendSystemPrompt;
+	let todoResult: BeforeAgentStartEventResult | undefined;
+	for (const handler of todoHandlers.get("before_agent_start") ?? []) todoResult = await handler(event, session) as BeforeAgentStartEventResult | undefined;
 
 	assert.equal(aiResult, undefined, "gentle-ai must not return a replacement systemPrompt");
-	assert.equal(todoResult, undefined, "gentle-todo must not return a replacement systemPrompt");
-
-	const appended = event.systemPromptOptions.appendSystemPrompt;
-	assert.match(appended, /el Gentleman Identity and Harness/);
-	assert.match(appended, /## Todo list/);
-	assert.match(appended, /1\. \[pending\] Fix the bug/);
-	assert.ok(
-		appended.indexOf("el Gentleman Identity and Harness") < appended.indexOf("## Todo list"),
-		"gentle-ai's block must precede gentle-todo's, matching handler registration order",
-	);
+	assert.equal(todoResult?.systemPrompt, undefined, "gentle-todo must not return a replacement systemPrompt");
+	assert.equal(todoResult?.message?.customType, "gentle-todo");
+	assert.equal(todoResult?.message?.display, false);
+	assert.match(todoResult?.message?.content as string, /## Todo list/);
+	assert.match(todoResult?.message?.content as string, /1\. \[pending\] #1 Fix the bug/);
+	assert.equal(event.systemPrompt, "base");
+	assert.equal(event.systemPromptOptions.appendSystemPrompt, harness, "todo must leave the harness prefix unchanged");
+	assert.match(harness, /el Gentleman Identity and Harness/);
+	assert.doesNotMatch(harness, /## Todo list|stale/);
 });
 
-test("re-running both handlers on the same already-populated options object does not duplicate either block", async () => {
+test("re-running the harness handler on already-populated options does not duplicate its stable block", async () => {
 	const aiHandlers = gentleAiHandlers();
 	const { handlers: todoHandlers, tools } = gentleTodoHandlers();
 	const session = ctx();

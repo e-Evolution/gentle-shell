@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test, { after, before, type TestContext } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import * as todo from "../lib/shell-todo.ts";
 import {
 	applyTodo,
 	emptyTodo,
@@ -152,19 +153,34 @@ test("replayTodo rebuilds the latest state from Gentle and rpiv tool results ali
 	assert.deepEqual(replayTodo([]), emptyTodo());
 });
 
-test("todoPromptBlock lists open work with the rules, and stays silent when there is nothing open", () => {
-	const block = todoPromptBlock(seeded(), 0);
+test("todoPromptBlock is a stable ordered snapshot with IDs and no mutable stale counter", () => {
+	const block = todoPromptBlock(seeded());
 	assert.ok(block);
 	assert.match(block, /^## Todo list/m);
 	assert.match(block, /mark a task in_progress before starting/);
-	assert.match(block, /1\. \[done\] Add quiet tool rendering/);
-	assert.match(block, /2\. \[in_progress\] Fix quiet tools conflict — fixing conflict/);
-	assert.match(block, /3\. \[pending\] Show git bash tails/);
+	assert.match(block, /1\. \[done\] #1 Add quiet tool rendering/);
+	assert.match(block, /2\. \[in_progress\] #2 Fix quiet tools conflict — fixing conflict/);
+	assert.match(block, /3\. \[pending\] #3 Show git bash tails/);
 	assert.doesNotMatch(block, /stale/);
-	assert.match(todoPromptBlock(seeded(), 2) ?? "", /stale: 2 turns without an update/);
-	assert.equal(todoPromptBlock(emptyTodo(), 0), undefined);
+	assert.equal(todoPromptBlock({ ...seeded(), updatedTurn: 20 }), block);
+	assert.match(todoPromptBlock(emptyTodo()), /No active todo tasks/);
 	const allDone = applyTodo(seeded(), { action: "write", tasks: [{ title: "A", status: "done" }] }, 1).state;
-	assert.equal(todoPromptBlock(allDone, 0), undefined);
+	assert.match(todoPromptBlock(allDone), /No active todo tasks/);
+});
+
+test("todoSignature canonicalizes fields, not task order, and matches snapshot content", () => {
+	const state = seeded();
+	const equivalent = { ...state, nextId: 99, updatedTurn: 100, tasks: state.tasks.map((task) => ({ note: task.note ?? "", status: task.status, title: task.title, id: task.id })) };
+	assert.equal(todo.todoSignature(state), todo.todoSignature(equivalent), "property order and absent/empty notes are equivalent");
+	assert.equal(todoPromptBlock(state), todoPromptBlock(equivalent));
+	for (const field of [{ id: 99 }, { title: "new" }, { status: TODO_STATUS.PENDING }, { note: "new" }]) {
+		const changed = { ...state, tasks: state.tasks.map((task, index) => index === 0 ? { ...task, ...field } : task) };
+		assert.notEqual(todo.todoSignature(state), todo.todoSignature(changed));
+		assert.notEqual(todoPromptBlock(state), todoPromptBlock(changed));
+	}
+	const reordered = { ...state, tasks: [...state.tasks].reverse() };
+	assert.notEqual(todo.todoSignature(state), todo.todoSignature(reordered), "intentional list order is significant");
+	assert.notEqual(todoPromptBlock(state), todoPromptBlock(reordered));
 });
 
 test("renderTodoCard draws the framed list with status glyphs and keeps every line at width", () => {

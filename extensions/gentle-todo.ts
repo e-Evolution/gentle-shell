@@ -1,6 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, type Component, type TUI } from "@earendil-works/pi-tui";
-import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import { NativePointerRegion } from "../lib/native-pointer-region.ts";
 import { panelHeaderRow } from "../lib/shell-card.ts";
 import { sidebarPart } from "../lib/shell-sidebar.ts";
@@ -11,11 +10,14 @@ import {
 	renderTodoCard,
 	replayTodo,
 	staleTurns,
+	STALE_AFTER_TURNS,
+	TODO_STALE_NUDGE,
 	TODO_DETAILS_KEY,
 	TODO_GLYPH,
 	TODO_TOOL_NAME,
 	todoCardTone,
 	todoPromptBlock,
+	todoSignature,
 	todoSummary,
 	type TodoParams,
 	type TodoState,
@@ -24,9 +26,9 @@ import {
 // Gentle Todo: the task list the model keeps while it works, drawn as a
 // Gentle Shell card above the editor. Three things keep it current that a
 // static tool description cannot: `write` replaces the whole list in one
-// call, every turn's system prompt carries the open tasks and the rules, and
-// a list that goes untouched while tasks stay open is marked stale for both
-// the human and the model.
+// call, hidden persisted snapshots carry the open tasks without changing the
+// system prompt, and stale work gets a one-shot reminder while the card keeps
+// its live freshness counter.
 
 const WIDGET_KEY = "gentle-todo";
 const COLLAPSE_KEY_DEFAULT = "ctrl+shift+t";
@@ -76,9 +78,16 @@ interface TodoSession {
 	collapsed: boolean;
 	/** A finished list stays on screen for the turn it finished in, then clears. */
 	clearOnNextTurn: boolean;
+	staleNudged: boolean;
 	ui: ExtensionContext["ui"] | undefined;
 	host: { requestRender(): void } | undefined;
 	tui: TUI | undefined;
+}
+
+interface TodoSnapshotDetails {
+	signature: string;
+	updatedTurn: number | null;
+	staleNudged: boolean;
 }
 
 function sessionKey(ctx: ExtensionContext): string {
@@ -94,7 +103,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		const key = sessionKey(ctx);
 		let current = sessions.get(key);
 		if (!current) {
-			current = { state: emptyTodo(), turn: 0, collapsed: false, clearOnNextTurn: false, ui: undefined, host: undefined, tui: undefined };
+			current = { state: emptyTodo(), turn: 0, collapsed: false, clearOnNextTurn: false, staleNudged: false, ui: undefined, host: undefined, tui: undefined };
 			sessions.set(key, current);
 		}
 		return current;
@@ -198,6 +207,7 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 			const current = session(ctx);
 			const result = applyTodo(current.state, params as TodoParams, current.turn);
 			if (!result.error) {
+				if (result.state !== current.state) current.staleNudged = false;
 				current.state = result.state;
 				current.clearOnNextTurn = false;
 				if (current.tui) invalidateSidebar(current.tui);
@@ -218,22 +228,31 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 		});
 	}
 
-	pi.on("session_start", (_event, ctx) => {
+	const restore = (ctx: ExtensionContext) => {
 		const current = session(ctx);
+		const branch = ctx.sessionManager.getBranch();
 		// A list that was already finished when the session was left is history,
 		// not work: it would otherwise sit on screen until two more turns pass.
-		const replayed = replayTodo(ctx.sessionManager.getBranch());
+		const replayed = replayTodo(branch);
 		current.state = replayed.tasks.length > 0 && todoSummary(replayed).open === 0 ? { ...replayed, tasks: [] } : replayed;
-		current.turn = ctx.sessionManager.getBranch().filter((entry) => (entry as { type?: string }).type === "message" && (entry as { message?: { role?: string } }).message?.role === "user").length;
+		current.turn = branch.filter((entry) => entry.type === "message" && entry.message.role === "user").length;
+		current.clearOnNextTurn = false;
+		// Raw history remembers spent nudges even when compaction removes their
+		// messages. A later successful update (even identical text) rearms them.
+		const latest = branch.filter((entry) => entry.type === "custom_message" && entry.customType === WIDGET_KEY).at(-1);
+		const details = latest?.type === "custom_message" ? latest.details as TodoSnapshotDetails | undefined : undefined;
+		current.staleNudged = details?.signature === todoSignature(current.state) && details.updatedTurn === current.state.updatedTurn && details.staleNudged === true;
 		current.ui = ctx.hasUI ? ctx.ui : undefined;
 		show(current);
-	});
+	};
+	pi.on("session_start", (_event, ctx) => restore(ctx));
+	pi.on("session_tree", (_event, ctx) => restore(ctx));
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		sessions.delete(sessionKey(ctx));
 	});
 
-	pi.on("before_agent_start", (event, ctx) => {
+	pi.on("before_agent_start", (_event, ctx) => {
 		const current = session(ctx);
 		current.turn += 1;
 		if (current.tui) invalidateSidebar(current.tui);
@@ -242,12 +261,26 @@ export default function gentleTodo(pi: ExtensionAPI, env: NodeJS.ProcessEnv = pr
 			current.clearOnNextTurn = false;
 			show(current);
 		}
-		const block = todoPromptBlock(current.state, staleTurns(current.state, current.turn));
-		if (!block) return undefined;
-		// gentle-shell#1485: pi-claude-bridge drops a handler-returned
-		// systemPrompt, so the open-tasks block goes through appendSystemPrompt.
-		appendSystemPromptOnce(event.systemPromptOptions, block);
-		return undefined;
+		const block = todoPromptBlock(current.state);
+		const signature = todoSignature(current.state);
+		// getBranch includes summarized history. Projection honors compaction
+		// and context edits; only the latest retained snapshot is authoritative.
+		const latest = ctx.sessionManager.buildSessionProjection().messages
+			.filter((message) => message.role === "custom" && message.customType === WIDGET_KEY).at(-1);
+		const details = latest?.role === "custom" ? latest.details as TodoSnapshotDetails | undefined : undefined;
+		const retained = latest?.role === "custom" && details?.signature === signature && (latest.content === block || latest.content === `${block}\n\n${TODO_STALE_NUDGE}`);
+		const nudge = !current.staleNudged && staleTurns(current.state, current.turn) >= STALE_AFTER_TURNS;
+		if (retained && !nudge) return undefined;
+		if (!latest && current.state.tasks.length === 0 && current.state.updatedTurn === null) return undefined;
+		if (nudge) current.staleNudged = true;
+		// One return slot carries both snapshot and reminder. Pi persists it
+		// after the user prompt; no sendMessage/continuation starts another run.
+		return { message: {
+			customType: WIDGET_KEY,
+			display: false,
+			content: nudge ? `${block}\n\n${TODO_STALE_NUDGE}` : block,
+			details: { signature, updatedTurn: current.state.updatedTurn, staleNudged: current.staleNudged } satisfies TodoSnapshotDetails,
+		} };
 	});
 
 	pi.on("tool_execution_end", (event, ctx) => {

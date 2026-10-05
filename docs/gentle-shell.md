@@ -289,8 +289,8 @@ The `todo` tool and its card replace the third-party todo extension (remove `npm
 The runtime helps keep the list current beyond a static tool description:
 
 - `write` replaces the whole list in one call, so the model rewrites the plan instead of patching it; `add`, `update`, `clear`, and `list` remain for single moves.
-- Each agent run's system prompt carries the open tasks and the rules: in_progress before starting, done right after finishing, update before ending the run.
-- A list that goes two agent runs untouched while pending or in-progress tasks remain turns amber with `stale · N turns`, and the prompt reports that age.
+- Hidden, persisted conversation snapshots carry the ordered tasks, IDs and rules only when the list changes or its latest snapshot is missing from retained context. The system prompt stays unchanged, so prefix and KV caches survive across runs; resume, branching and compaction restore a missing snapshot once.
+- A list that goes two agent runs untouched while pending or in-progress tasks remain turns amber with `stale · N turns`. The model gets one stale reminder without a changing counter; a successful todo mutation rearms it, while `list` and failed updates do not.
 - Within a long run, after four tool-use model turns without a successful todo write, the next model request receives one hidden, request-local reminder to review the plan. A successful `write`, `add`, `update`, or `clear` resets and rearms it; `list` and rejected writes do not. The turn containing the write does not count toward the threshold. Empty, finished and blocked-only plans receive no reminder. Reminder tracking restarts when the session loads; it does not change the existing card freshness, persist a message, start an extra model turn, change task statuses, or connect to subagents.
 
 Tasks are `pending` (`○`), `in_progress` (`◐`), `blocked` (`⊘`), `done` (`✓`), or `dropped` (`✕`):
@@ -298,7 +298,7 @@ Tasks are `pending` (`○`), `in_progress` (`◐`), `blocked` (`⊘`), `done` (`
 - `blocked` is open work that waits on something outside the list, such as an admin, another team, or an authorization. It requires a note naming what it waits for, shown next to the title (`⊘ Deploy the cleanup job · waiting for an admin`). Blocked tasks keep the list open, but they never make it stale, and the collapsed card skips them for the next task.
 - `dropped` marks a task a change of plan made obsolete. It renders dim without strikethrough, leaves the `done of total` count, and does not count as open, so a list whose remaining tasks are all `done` or `dropped` is finished. `cancelled`, `canceled`, and `abandoned` are accepted as aliases.
 
-A finished list stays on screen for the turn it finished in and clears at the next. `ctrl+shift+t` collapses the card to one task line, truncating long titles and notes with `…` (`GENTLE_PI_TODO_KEY` rebinds it, `off` disables it); `GENTLE_PI_TODO=0` disables the tool and the card.
+A finished list stays on screen for the turn it finished in and clears at the next. Cleared or finished work supersedes earlier active snapshots with a hidden “No active todo tasks” message once. `ctrl+shift+t` collapses the card to one task line, truncating long titles and notes with `…` (`GENTLE_PI_TODO_KEY` rebinds it, `off` disables it); `GENTLE_PI_TODO=0` disables the tool and the card.
 
 Expanded cards reserve at most one third of the terminal height (up to 16 rows, with a minimum for card chrome), both in the sidebar and above the editor on narrow/mobile terminals. Scroll the full task text with the wheel in fullscreen mode or `ctrl+shift+up` / `ctrl+shift+down` in either mode. The collapse header stays visible; the row-range hint shows when more content is available. Task data and the agent's plan remain complete.
 

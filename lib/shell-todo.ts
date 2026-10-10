@@ -105,7 +105,8 @@ const STATUS_GLYPH: Record<TodoStatus, string> = { [TODO_STATUS.PENDING]: "○",
 const STATUS_ROLE: Record<TodoStatus, string> = { [TODO_STATUS.PENDING]: "text", [TODO_STATUS.IN_PROGRESS]: "accent", [TODO_STATUS.BLOCKED]: "text", [TODO_STATUS.DONE]: "dim", [TODO_STATUS.DROPPED]: "dim" };
 const GLYPH_ROLE: Record<TodoStatus, string> = { [TODO_STATUS.PENDING]: "muted", [TODO_STATUS.IN_PROGRESS]: "accent", [TODO_STATUS.BLOCKED]: "warning", [TODO_STATUS.DONE]: "success", [TODO_STATUS.DROPPED]: "muted" };
 const NOTE_ROLE = "muted";
-const STALE_AFTER_TURNS = 2;
+export const STALE_AFTER_TURNS = 2;
+export const TODO_STALE_NUDGE = "The todo list is stale — bring the list up to date now with the `todo` tool.";
 /** Above this many rows the finished tasks fold into one line and the rest is capped. */
 const ROW_CAP = 12;
 
@@ -258,16 +259,21 @@ export function replayTodo(entries: readonly unknown[]): TodoState {
 	return state;
 }
 
-export function todoPromptBlock(state: TodoState, stale: number): string | undefined {
-	if (todoSummary(state).open === 0) return undefined;
-	const lines = state.tasks.map((task, index) => `${index + 1}. [${task.status}] ${task.title}${task.note ? ` — ${task.note}` : ""}`);
-	const staleLine = stale >= STALE_AFTER_TURNS ? `\n(stale: ${stale} turns without an update — bring the list up to date now)` : "";
+/** List order is intentional; only property order and absent/empty notes are equivalent. */
+export function todoSignature(state: TodoState): string {
+	return JSON.stringify(state.tasks.map((task) => [task.id, task.title, task.status, task.note || ""]));
+}
+
+/** A cache-stable snapshot: freshness counters belong only in the card. */
+export function todoPromptBlock(state: TodoState): string {
+	const lines = state.tasks.map((task, index) => `${index + 1}. ${taskLine(task)}`);
+	if (todoSummary(state).open === 0) return ["## Todo list", "No active todo tasks.", ...lines].join("\n");
 	return [
 		"## Todo list",
 		"Keep it current with the `todo` tool: mark a task in_progress before starting it, done right after finishing it, and rewrite the whole list with `write` whenever the plan changes. Update it before you end the turn.",
 		"A blocked task waits on something outside the list: do not work on it until its condition holds. When the plan changes, mark the tasks it made obsolete dropped instead of leaving them pending or marking them done.",
 		...lines,
-	].join("\n") + staleLine;
+	].join("\n");
 }
 
 function taskRow(task: TodoTask, theme: TodoTheme, inner: number): string {

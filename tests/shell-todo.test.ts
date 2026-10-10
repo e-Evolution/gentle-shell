@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test, { after, before, type TestContext } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import * as todo from "../lib/shell-todo.ts";
 import {
 	applyTodo,
 	emptyTodo,
@@ -152,19 +153,34 @@ test("replayTodo rebuilds the latest state from Gentle and rpiv tool results ali
 	assert.deepEqual(replayTodo([]), emptyTodo());
 });
 
-test("todoPromptBlock lists open work with the rules, and stays silent when there is nothing open", () => {
-	const block = todoPromptBlock(seeded(), 0);
+test("todoPromptBlock is a stable ordered snapshot with IDs and no mutable stale counter", () => {
+	const block = todoPromptBlock(seeded());
 	assert.ok(block);
 	assert.match(block, /^## Todo list/m);
 	assert.match(block, /mark a task in_progress before starting/);
-	assert.match(block, /1\. \[done\] Add quiet tool rendering/);
-	assert.match(block, /2\. \[in_progress\] Fix quiet tools conflict — fixing conflict/);
-	assert.match(block, /3\. \[pending\] Show git bash tails/);
+	assert.match(block, /1\. \[done\] #1 Add quiet tool rendering/);
+	assert.match(block, /2\. \[in_progress\] #2 Fix quiet tools conflict — fixing conflict/);
+	assert.match(block, /3\. \[pending\] #3 Show git bash tails/);
 	assert.doesNotMatch(block, /stale/);
-	assert.match(todoPromptBlock(seeded(), 2) ?? "", /stale: 2 turns without an update/);
-	assert.equal(todoPromptBlock(emptyTodo(), 0), undefined);
+	assert.equal(todoPromptBlock({ ...seeded(), updatedTurn: 20 }), block);
+	assert.match(todoPromptBlock(emptyTodo()), /No active todo tasks/);
 	const allDone = applyTodo(seeded(), { action: "write", tasks: [{ title: "A", status: "done" }] }, 1).state;
-	assert.equal(todoPromptBlock(allDone, 0), undefined);
+	assert.match(todoPromptBlock(allDone), /No active todo tasks/);
+});
+
+test("todoSignature canonicalizes fields, not task order, and matches snapshot content", () => {
+	const state = seeded();
+	const equivalent = { ...state, nextId: 99, updatedTurn: 100, tasks: state.tasks.map((task) => ({ note: task.note ?? "", status: task.status, title: task.title, id: task.id })) };
+	assert.equal(todo.todoSignature(state), todo.todoSignature(equivalent), "property order and absent/empty notes are equivalent");
+	assert.equal(todoPromptBlock(state), todoPromptBlock(equivalent));
+	for (const field of [{ id: 99 }, { title: "new" }, { status: TODO_STATUS.PENDING }, { note: "new" }]) {
+		const changed = { ...state, tasks: state.tasks.map((task, index) => index === 0 ? { ...task, ...field } : task) };
+		assert.notEqual(todo.todoSignature(state), todo.todoSignature(changed));
+		assert.notEqual(todoPromptBlock(state), todoPromptBlock(changed));
+	}
+	const reordered = { ...state, tasks: [...state.tasks].reverse() };
+	assert.notEqual(todo.todoSignature(state), todo.todoSignature(reordered), "intentional list order is significant");
+	assert.notEqual(todoPromptBlock(state), todoPromptBlock(reordered));
 });
 
 test("collapsed long tasks occupy one body line, including stale state, without losing task data", (t) => {
@@ -443,10 +459,11 @@ test("applyTodo rejects blocked without a note and leaves the list unchanged", (
 	assert.equal(unblocked.state.tasks[2].status, TODO_STATUS.PENDING);
 });
 
-test("dropped tasks never count as open: a list of done and dropped is finished, silent, and never stale", () => {
+test("dropped tasks never count as open: a list of done and dropped is finished, has no active tasks, and never stale", () => {
 	const state = applyTodo(emptyTodo(), { action: "write", tasks: [{ title: "A", status: "done" }, { title: "B", status: "dropped" }, { title: "C", status: "dropped" }] }, 1).state;
 	assert.deepEqual(todoSummary(state), { done: 1, total: 3, open: 0 });
-	assert.equal(todoPromptBlock(state, 5), undefined);
+	assert.match(todoPromptBlock(state), /No active todo tasks/);
+	assert.doesNotMatch(todoPromptBlock(state), /Keep it current/);
 	assert.equal(staleTurns(state, 9), 0);
 });
 
@@ -454,8 +471,8 @@ test("blocked tasks stay open but alone never make the list stale; an actionable
 	const blockedOnly = applyTodo(emptyTodo(), { action: "write", tasks: [{ title: "A", status: "done" }, { title: "Deploy", status: "blocked", note: "waiting for an admin" }] }, 1).state;
 	assert.deepEqual(todoSummary(blockedOnly), { done: 1, total: 2, open: 1 });
 	assert.equal(staleTurns(blockedOnly, 9), 0);
-	const block = todoPromptBlock(blockedOnly, 0) ?? "";
-	assert.match(block, /2\. \[blocked\] Deploy — waiting for an admin/);
+	const block = todoPromptBlock(blockedOnly);
+	assert.match(block, /2\. \[blocked\] #2 Deploy — waiting for an admin/);
 	assert.match(block, /A blocked task waits on something outside the list: do not work on it until its condition holds/);
 	assert.match(block, /mark the tasks it made obsolete dropped instead of leaving them pending or marking them done/);
 	const mixed = applyTodo(blockedOnly, { action: "add", title: "Write docs" }, 1).state;

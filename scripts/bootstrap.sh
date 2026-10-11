@@ -78,7 +78,8 @@ make_tools() {
     tools=$(mktemp -d "$HOME/.gentle-shell-bootstrap-tools.XXXXXXXX") || fail 'Cannot create private tooling directory'
     case "$tools" in "$HOME"/.gentle-shell-bootstrap-tools.*) ;; *) fail 'Conflicting tooling destination';; esac
     [ -d "$tools" ] && [ ! -L "$tools" ] || fail 'Unsafe tooling destination'
-    ls -nd "$tools" | awk -v uid="$uid" '$3 == uid && $1 == "drwx------" {ok=1} END {exit !ok}' || fail 'Unsafe tooling ownership'
+    # macOS ls appends @ for extended attributes; unlike ACL's +, it does not grant access.
+    ls -nd "$tools" | awk -v uid="$uid" '$3 == uid && ($1 == "drwx------" || $1 == "drwx------@") {ok=1} END {exit !ok}' || fail 'Unsafe tooling ownership'
     # No existing destination is ever reused or replaced.
     mkdir "$tools/.claim" || fail 'Conflicting tooling destination'
     owned=1

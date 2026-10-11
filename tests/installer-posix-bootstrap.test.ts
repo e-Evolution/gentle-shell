@@ -132,6 +132,34 @@ posixTest("missing wizard fails explicitly without acquiring or claiming install
 		assert.deepEqual(readdirSync(f.home), []);
 	} finally { f.cleanup(); }
 });
+posixTest("native private tooling accepts only owned inaccessible directories", () => {
+	const f = fixture();
+	try {
+		f.addPnpm(); f.wizard();
+		const result = f.run();
+		assert.equal(result.status, 0, result.stderr);
+		const entries = readdirSync(f.home);
+		assert.match(result.stdout, /wizard-child:/);
+		assert.equal(result.stderr, "");
+		assert.deepEqual(entries, []);
+	} finally { f.cleanup(); }
+});
+
+posixTest("native private tooling rejects group-accessible mktemp output", () => {
+	const f = fixture();
+	try {
+		f.addPnpm(); f.wizard();
+		f.executable("mktemp", `path=$('${systemUtility("mktemp")}' "$@") || exit $?\n'${systemUtility("chmod")}' 750 "$path" || exit $?\nprintf '%s\\n' "$path"`);
+		const result = f.run();
+		assert.equal(result.status, 1);
+		assert.equal(result.stdout, "");
+		assert.equal(result.stderr, "Bootstrap: Unsafe tooling ownership\n");
+		const entries = readdirSync(f.home);
+		assert.equal(entries.length, 1);
+		assert.equal(lstatSync(join(f.home, entries[0])).mode & 0o777, 0o750);
+	} finally { f.cleanup(); }
+});
+
 posixTest("no initial Node acquires verified native binary and refreshes child PATH", () => {
 	const f = fixture();
 	try {

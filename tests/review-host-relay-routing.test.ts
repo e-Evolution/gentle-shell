@@ -1316,6 +1316,24 @@ test("a pinned profile missing a single-capture role sends no selection instead 
 	assert.equal(relayed[0]!.selection, undefined, "whole-profile precedence: models.json must not fill the pinned profile's gaps");
 });
 
+test("isolated public selection probe refuses absent pinned role before lookup or auth", async (t) => {
+	const cwd = pinFixture(t);
+	pinLocal(cwd, "pinned-partial");
+	const lineageId = "relay-pin-isolated-probe";
+	const inputs = [relayCollectInput(lineageId, "review-resilience", 0)];
+	const harness = nativeHarness([finalizeStatus(lineageId, inputs)]);
+	let lookups = 0, auth = 0;
+	const registry: InProcessReviewerRegistry = {
+		find: () => { lookups++; return undefined; },
+		getApiKeyAndHeaders: async () => { auth++; return { ok: true }; },
+	};
+	const result = await runCaptureGroup(cwd, harness, lineageId, inputs, true, registry);
+	assert.equal(result.outcome, "pi-host-relay-transport-failure", String(result.reason));
+	assert.deepEqual({ outcome: result.outcome, failure: (result.failure as { kind?: string } | undefined)?.kind, lookups, auth, statusCalls: harness.statusCalls.length }, {
+		outcome: "pi-host-relay-transport-failure", failure: "reviewer-config-invalid", lookups: 0, auth: 0, statusCalls: 1,
+	});
+});
+
 test("a pinned profile missing a required group role is refused typed before any reviewer launch", async (t) => {
 	const cwd = pinFixture(t);
 	pinLocal(cwd, "pinned-partial");

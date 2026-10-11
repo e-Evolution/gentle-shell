@@ -629,12 +629,11 @@ function snapshotReviewHostRelayRequest(request: ReviewHostRelayRequest): Review
 	// are TypeErrors — a programmer mistake, never a typed relay refusal — and
 	// are checked before the business-level reviewer selection below.
 	assertTokens("capture", request.captureArgumentTokens);
-	const gentleAiExecutable = request.gentleAiExecutable ?? resolveGentleAiBinary();
-	if (!isAbsolute(gentleAiExecutable)) throw new TypeError("Pi host relay requires an absolute gentle-ai executable path");
-	// Caller-owned reviewer selection is validated before any process launches:
-	// a broken configuration is a typed refusal, never a mid-review transport
-	// failure (gentle-pi#311 P2).
+	if (request.gentleAiExecutable !== undefined && !isAbsolute(request.gentleAiExecutable)) throw new TypeError("Pi host relay requires an absolute gentle-ai executable path");
+	// Refuse invalid reviewer selection before resolving a package-local binary:
+	// the executable is not needed when no reviewer may launch.
 	const reviewerSelection = validateReviewerSelectionConfiguration(request);
+	const gentleAiExecutable = request.gentleAiExecutable ?? resolveGentleAiBinary();
 	// The completing form is validated before any process launches: a materialize
 	// slot without a provider-owned submission is a typed contract mismatch,
 	// never a synthesized invocation.
